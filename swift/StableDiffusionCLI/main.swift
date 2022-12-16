@@ -48,7 +48,7 @@ struct StableDiffusionSample: ParsableCommand {
     var outputPath: String = "./"
 
     @Option(help: "Random seed")
-    var seed: Int = 93
+    var seed: UInt32 = 93
 
     @Option(help: "Compute units to load model with {all,cpuOnly,cpuAndGPU,cpuAndNeuralEngine}")
     var computeUnits: ComputeUnits = .all
@@ -58,6 +58,9 @@ struct StableDiffusionSample: ParsableCommand {
 
     @Flag(help: "Disable safety checking")
     var disableSafety: Bool = false
+
+    @Option(help: "Controls the influence of the text prompt on sampling process (0=random images)")
+    var guidanceScale: Float = 7.5
 
     @Flag(help: "Reduce memory usage")
     var reduceMemory: Bool = false
@@ -88,6 +91,7 @@ struct StableDiffusionSample: ParsableCommand {
             imageCount: imageCount,
             stepCount: stepCount,
             seed: seed,
+            guidanceScale: guidanceScale,
             scheduler: scheduler.stableDiffusionScheduler
         ) { progress in
             sampleTimer.stop()

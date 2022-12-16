@@ -33,9 +33,6 @@ public struct StableDiffusionPipeline: ResourceManaging {
     /// Optional model for checking safety of generated image
     var safetyChecker: SafetyChecker? = nil
 
-    /// Controls the influence of the text prompt on sampling process (0=random images)
-    var guidanceScale: Float = 7.5
-
     /// Reports whether this pipeline can perform safety checks
     public var canSafetyCheck: Bool {
         safetyChecker != nil
@@ -63,13 +60,11 @@ public struct StableDiffusionPipeline: ResourceManaging {
                 unet: Unet,
                 decoder: Decoder,
                 safetyChecker: SafetyChecker? = nil,
-                guidanceScale: Float = 7.5,
                 reduceMemory: Bool = false) {
         self.textEncoder = textEncoder
         self.unet = unet
         self.decoder = decoder
         self.safetyChecker = safetyChecker
-        self.guidanceScale = guidanceScale
         self.reduceMemory = reduceMemory
     }
 
@@ -111,6 +106,7 @@ public struct StableDiffusionPipeline: ResourceManaging {
     ///   - stepCount: Number of inference steps to perform
     ///   - imageCount: Number of samples/images to generate for the input prompt
     ///   - seed: Random seed which
+    ///   - guidanceScale: Controls the influence of the text prompt on sampling process (0=random images)
     ///   - disableSafety: Safety checks are only performed if `self.canSafetyCheck && !disableSafety`
     ///   - progressHandler: Callback to perform after each step, stops on receiving false response
     /// - Returns: An array of `imageCount` optional images.
@@ -119,7 +115,8 @@ public struct StableDiffusionPipeline: ResourceManaging {
         prompt: String,
         imageCount: Int = 1,
         stepCount: Int = 50,
-        seed: Int = 0,
+        seed: UInt32 = 0,
+        guidanceScale: Float = 7.5,
         disableSafety: Bool = false,
         scheduler: StableDiffusionScheduler = .pndmScheduler,
         progressHandler: (Progress) -> Bool = { _ in true }
@@ -170,7 +167,7 @@ public struct StableDiffusionPipeline: ResourceManaging {
                 hiddenStates: hiddenStates
             )
 
-            noise = performGuidance(noise)
+            noise = performGuidance(noise, guidanceScale)
 
             // Have the scheduler compute the previous (t-1) latent
             // sample given the predicted noise and current sample
@@ -205,11 +202,11 @@ public struct StableDiffusionPipeline: ResourceManaging {
         return try decodeToImages(latents, disableSafety: disableSafety)
     }
 
-    func generateLatentSamples(_ count: Int, stdev: Float, seed: Int) -> [MLShapedArray<Float32>] {
+    func generateLatentSamples(_ count: Int, stdev: Float, seed: UInt32) -> [MLShapedArray<Float32>] {
         var sampleShape = unet.latentSampleShape
         sampleShape[0] = 1
 
-        var random = NumPyRandomSource(seed: UInt32(truncatingIfNeeded: seed))
+        var random = NumPyRandomSource(seed: seed)
         let samples = (0..<count).map { _ in
             MLShapedArray<Float32>(
                 converting: random.normalShapedArray(sampleShape, mean: 0.0, stdev: Double(stdev)))
@@ -233,11 +230,11 @@ public struct StableDiffusionPipeline: ResourceManaging {
         return states
     }
 
-    func performGuidance(_ noise: [MLShapedArray<Float32>]) -> [MLShapedArray<Float32>] {
-        noise.map { performGuidance($0) }
+    func performGuidance(_ noise: [MLShapedArray<Float32>], _ guidanceScale: Float) -> [MLShapedArray<Float32>] {
+        noise.map { performGuidance($0, guidanceScale) }
     }
 
-    func performGuidance(_ noise: MLShapedArray<Float32>) -> MLShapedArray<Float32> {
+    func performGuidance(_ noise: MLShapedArray<Float32>, _ guidanceScale: Float) -> MLShapedArray<Float32> {
 
         let blankNoiseScalars = noise[0].scalars
         let textNoiseScalars = noise[1].scalars
