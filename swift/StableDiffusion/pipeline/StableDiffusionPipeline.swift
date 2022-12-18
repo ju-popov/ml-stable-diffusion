@@ -103,6 +103,7 @@ public struct StableDiffusionPipeline: ResourceManaging {
     ///
     /// - Parameters:
     ///   - prompt: Text prompt to guide sampling
+    ///   - negativePrompt: Negative text prompt to guide sampling
     ///   - stepCount: Number of inference steps to perform
     ///   - imageCount: Number of samples/images to generate for the input prompt
     ///   - seed: Random seed which
@@ -113,6 +114,7 @@ public struct StableDiffusionPipeline: ResourceManaging {
     ///            The images will be nil if safety checks were performed and found the result to be un-safe
     public func generateImages(
         prompt: String,
+        negativePrompt: String = "",
         imageCount: Int = 1,
         stepCount: Int = 50,
         seed: UInt32 = 0,
@@ -124,7 +126,7 @@ public struct StableDiffusionPipeline: ResourceManaging {
 
         // Encode the input prompt as well as a blank unconditioned input
         let promptEmbedding = try textEncoder.encode(prompt)
-        let blankEmbedding = try textEncoder.encode("")
+        let blankEmbedding = try textEncoder.encode(negativePrompt)
 
         if reduceMemory {
             textEncoder.unloadResources()

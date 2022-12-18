@@ -16,7 +16,7 @@ import logging
 
 logging.basicConfig()
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 import numpy as np
 import os
@@ -391,6 +391,9 @@ def convert_vae_decoder(pipe, args):
         args.latent_w or pipe.unet.config.sample_size,  # w
     )
 
+    logger.debug("-------> z_shape <-------")
+    logger.debug(z_shape)
+
     sample_vae_decoder_inputs = {
         "z": torch.rand(*z_shape, dtype=torch.float16)
     }
@@ -484,9 +487,12 @@ def convert_unet(pipe, args):
         sample_shape = (
             batch_size,                    # B
             pipe.unet.config.in_channels,  # C
-            pipe.unet.config.sample_size,  # H
-            pipe.unet.config.sample_size,  # W
+            args.latent_h or pipe.unet.config.sample_size,  # H
+            args.latent_w or pipe.unet.config.sample_size,  # W
         )
+
+        logger.debug("-------> sample_shape <-------")
+        logger.debug(sample_shape)
 
         if not hasattr(pipe, "text_encoder"):
             raise RuntimeError(
@@ -622,10 +628,13 @@ def convert_safety_checker(pipe, args):
 
     sample_image = np.random.randn(
         1,  # B
-        pipe.vae.config.sample_size,  # H
-        pipe.vae.config.sample_size,  # w
+        args.latent_h or pipe.vae.config.sample_size,  # H
+        args.latent_w or pipe.vae.config.sample_size,  # w
         3  # C
     ).astype(np.float32)
+
+    logger.debug("-------> sample_image <-------")
+    logger.debug(sample_image)
 
     # Note that pipe.feature_extractor is not an ML model. It simply
     # preprocesses data for the pipe.safety_checker module.
