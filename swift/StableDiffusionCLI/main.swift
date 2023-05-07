@@ -7,6 +7,8 @@ import CoreML
 import Foundation
 import StableDiffusion
 import UniformTypeIdentifiers
+import Cocoa
+import CoreImage
 
 @available(iOS 16.2, macOS 13.1, *)
 struct StableDiffusionSample: ParsableCommand {
@@ -19,6 +21,9 @@ struct StableDiffusionSample: ParsableCommand {
     @Argument(help: "Input string prompt")
     var prompt: String
 
+    @Option(help: "Input string negative prompt")
+    var negativePrompt: String = ""
+
     @Option(
         help: ArgumentHelp(
             "Path to stable diffusion resources.",
@@ -29,6 +34,12 @@ struct StableDiffusionSample: ParsableCommand {
         )
     )
     var resourcePath: String = "./"
+    
+    @Option(help: "Path to starting image.")
+    var image: String? = nil
+    
+    @Option(help: "Strength for image2image.")
+    var strength: Float = 0.5
 
     @Option(help: "Number of images to sample / generate")
     var imageCount: Int = 1
@@ -48,13 +59,31 @@ struct StableDiffusionSample: ParsableCommand {
     var outputPath: String = "./"
 
     @Option(help: "Random seed")
-    var seed: Int = 93
+    var seed: UInt32 = UInt32.random(in: 0...UInt32.max)
+
+    @Option(help: "Controls the influence of the text prompt on sampling process (0=random images)")
+    var guidanceScale: Float = 7.5
 
     @Option(help: "Compute units to load model with {all,cpuOnly,cpuAndGPU,cpuAndNeuralEngine}")
     var computeUnits: ComputeUnits = .all
 
     @Option(help: "Scheduler to use, one of {pndm, dpmpp}")
     var scheduler: SchedulerOption = .pndm
+
+    @Option(help: "Random number generator to use, one of {numpy, torch}")
+    var rng: RNGOption = .numpy
+    
+    @Option(
+        parsing: .upToNextOption,
+        help: "ControlNet models used in image generation (enter file names in Resources/controlnet without extension)"
+    )
+    var controlnet: [String] = []
+    
+    @Option(
+        parsing: .upToNextOption,
+        help: "image for each controlNet model (corresponding to the same order as --controlnet)"
+    )
+    var controlnetInputs: [String] = []
 
     @Flag(help: "Disable safety checking")
     var disableSafety: Bool = false
@@ -74,31 +103,80 @@ struct StableDiffusionSample: ParsableCommand {
         log("Loading resources and creating pipeline\n")
         log("(Note: This can take a while the first time using these resources)\n")
         let pipeline = try StableDiffusionPipeline(resourcesAt: resourceURL,
+                                                   controlNet: controlnet,
                                                    configuration: config,
                                                    disableSafety: disableSafety,
                                                    reduceMemory: reduceMemory)
         try pipeline.loadResources()
+        
+        let startingImage: CGImage?
+        if let image {
+            let imageURL = URL(filePath: image)
+            do {
+                startingImage = try convertImageToCGImage(imageURL: imageURL)
+            } catch let error {
+                throw RunError.resources("Starting image not found \(imageURL), error: \(error)")
+            }
+            
+        } else {
+            startingImage = nil
+        }
+        
+        // convert image for ControlNet into CGImage when controlNet available
+        let controlNetInputs: [CGImage]
+        if !controlnet.isEmpty {
+            controlNetInputs = try controlnetInputs.map { imagePath in
+                let imageURL = URL(filePath: imagePath)
+                do {
+                    return try convertImageToCGImage(imageURL: imageURL)
+                } catch let error {
+                    throw RunError.resources("Image for ControlNet not found \(imageURL), error: \(error)")
+                }
+            }
+        } else {
+            controlNetInputs = []
+        }
 
         log("Sampling ...\n")
         let sampleTimer = SampleTimer()
         sampleTimer.start()
 
+        var pipelineConfig = StableDiffusionPipeline.Configuration(prompt: prompt)
+        
+        pipelineConfig.negativePrompt = negativePrompt
+        pipelineConfig.startingImage = startingImage
+        pipelineConfig.strength = strength
+        pipelineConfig.imageCount = imageCount
+        pipelineConfig.stepCount = stepCount
+        pipelineConfig.seed = seed
+        pipelineConfig.controlNetInputs = controlNetInputs
+        pipelineConfig.guidanceScale = guidanceScale
+        pipelineConfig.schedulerType = scheduler.stableDiffusionScheduler
+        pipelineConfig.rngType = rng.stableDiffusionRNG
+        
         let images = try pipeline.generateImages(
-            prompt: prompt,
-            imageCount: imageCount,
-            stepCount: stepCount,
-            seed: seed,
-            scheduler: scheduler.stableDiffusionScheduler
-        ) { progress in
-            sampleTimer.stop()
-            handleProgress(progress,sampleTimer)
-            if progress.stepCount != progress.step {
-                sampleTimer.start()
-            }
-            return true
-        }
+            configuration: pipelineConfig,
+            progressHandler: { progress in
+                sampleTimer.stop()
+                handleProgress(progress,sampleTimer)
+                if progress.stepCount != progress.step {
+                    sampleTimer.start()
+                }
+                return true
+            })
 
         _ = try saveImages(images, logNames: true)
+    }
+    
+    func convertImageToCGImage(imageURL: URL) throws -> CGImage {
+        let imageData = try Data(contentsOf: imageURL)
+        guard
+            let nsImage = NSImage(data: imageData),
+            let loadedImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else {
+            throw RunError.resources("Image not available \(resourcePath)")
+        }
+        return loadedImage
     }
 
     func handleProgress(
@@ -160,6 +238,10 @@ struct StableDiffusionSample: ParsableCommand {
         if imageCount != 1 {
             name += ".\(sample)"
         }
+        
+        if image != nil {
+            name += ".str\(Int(strength * 100))"
+        }
 
         name += ".\(seed)"
 
@@ -202,6 +284,17 @@ enum SchedulerOption: String, ExpressibleByArgument {
         switch self {
         case .pndm: return .pndmScheduler
         case .dpmpp: return .dpmSolverMultistepScheduler
+        }
+    }
+}
+
+@available(iOS 16.2, macOS 13.1, *)
+enum RNGOption: String, ExpressibleByArgument {
+    case numpy, torch
+    var stableDiffusionRNG: StableDiffusionRNG {
+        switch self {
+        case .numpy: return .numpyRNG
+        case .torch: return .torchRNG
         }
     }
 }

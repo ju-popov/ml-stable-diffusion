@@ -1,6 +1,7 @@
 // For licensing see accompanying LICENSE.md file.
 // Copyright (C) 2022 Apple Inc. All Rights Reserved.
 
+import Accelerate
 import CoreML
 
 @available(iOS 16.2, macOS 13.1, *)
@@ -13,6 +14,9 @@ public protocol Scheduler {
 
     /// Training diffusion time steps index by inference time step
     var timeSteps: [Int] { get }
+
+    /// Training diffusion time steps index by inference time step
+    func calculateTimesteps(strength: Float?) -> [Int]
 
     /// Schedule of betas which controls the amount of noise added at each timestep
     var betas: [Float] { get }
@@ -56,20 +60,58 @@ public extension Scheduler {
     ///   - values: The arrays to be weighted and summed
     /// - Returns: sum_i weights[i]*values[i]
     func weightedSum(_ weights: [Double], _ values: [MLShapedArray<Float32>]) -> MLShapedArray<Float32> {
+        let scalarCount = values.first!.scalarCount
         assert(weights.count > 1 && values.count == weights.count)
-        assert(values.allSatisfy({ $0.scalarCount == values.first!.scalarCount }))
-        var w = Float(weights.first!)
-        var scalars = values.first!.scalars.map({ $0 * w })
-        for next in 1 ..< values.count {
-            w = Float(weights[next])
-            let nextScalars = values[next].scalars
-            for i in 0 ..< scalars.count {
-                scalars[i] += w * nextScalars[i]
+        assert(values.allSatisfy({ $0.scalarCount == scalarCount }))
+
+        return MLShapedArray(unsafeUninitializedShape: values.first!.shape) { scalars, _ in
+            scalars.initialize(repeating: 0.0)
+            for i in 0 ..< values.count {
+                let w = Float(weights[i])
+                values[i].withUnsafeShapedBufferPointer { buffer, _, _ in
+                    assert(buffer.count == scalarCount)
+                    // scalars[j] = w * values[i].scalars[j]
+                    cblas_saxpy(Int32(scalarCount), w, buffer.baseAddress, 1, scalars.baseAddress, 1)
+                }
             }
         }
-        return MLShapedArray(scalars: scalars, shape: values.first!.shape)
+    }
+    
+    func addNoise(
+        originalSample: MLShapedArray<Float32>,
+        noise: [MLShapedArray<Float32>],
+        strength: Float
+    ) -> [MLShapedArray<Float32>] {
+        let startStep = max(inferenceStepCount - Int(Float(inferenceStepCount) * strength), 0)
+        let alphaProdt = alphasCumProd[timeSteps[startStep]]
+        let betaProdt = 1 - alphaProdt
+        let sqrtAlphaProdt = sqrt(alphaProdt)
+        let sqrtBetaProdt = sqrt(betaProdt)
+        
+        let noisySamples = noise.map {
+            weightedSum(
+                [Double(sqrtAlphaProdt), Double(sqrtBetaProdt)],
+                [originalSample, $0]
+            )
+        }
+
+        return noisySamples
     }
 }
+
+// MARK: - Timesteps
+
+@available(iOS 16.2, macOS 13.1, *)
+public extension Scheduler {
+    func calculateTimesteps(strength: Float?) -> [Int] {
+        guard let strength else { return timeSteps }
+        let startStep = max(inferenceStepCount - Int(Float(inferenceStepCount) * strength), 0)
+        let actualTimesteps = Array(timeSteps[startStep...])
+        return actualTimesteps
+    }
+}
+
+// MARK: - BetaSchedule
 
 /// How to map a beta range to a sequence of betas to step over
 @available(iOS 16.2, macOS 13.1, *)
@@ -80,6 +122,7 @@ public enum BetaSchedule {
     case scaledLinear
 }
 
+// MARK: - PNDMScheduler
 
 /// A scheduler used to compute a de-noised image
 ///

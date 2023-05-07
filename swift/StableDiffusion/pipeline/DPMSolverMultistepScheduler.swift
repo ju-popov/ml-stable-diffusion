@@ -77,20 +77,26 @@ public final class DPMSolverMultistepScheduler: Scheduler {
         self.sigma_t = vForce.sqrt(vDSP.subtract([Float](repeating: 1, count: self.alphasCumProd.count), self.alphasCumProd))
         self.lambda_t = zip(self.alpha_t, self.sigma_t).map { α, σ in log(α) - log(σ) }
 
-        self.timeSteps = linspace(0, Float(self.trainStepCount-1), stepCount).reversed().map { Int(round($0)) }
+        self.timeSteps = linspace(0, Float(self.trainStepCount-1), stepCount+1).dropFirst().reversed().map { Int(round($0)) }
     }
     
     /// Convert the model output to the corresponding type the algorithm needs.
     /// This implementation is for second-order DPM-Solver++ assuming epsilon prediction.
     func convertModelOutput(modelOutput: MLShapedArray<Float32>, timestep: Int, sample: MLShapedArray<Float32>) -> MLShapedArray<Float32> {
-        assert(modelOutput.scalars.count == sample.scalars.count)
+        assert(modelOutput.scalarCount == sample.scalarCount)
+        let scalarCount = modelOutput.scalarCount
         let (alpha_t, sigma_t) = (self.alpha_t[timestep], self.sigma_t[timestep])
-        
-        // This could be optimized with a Metal kernel if we find we need to
-        let x0_scalars = zip(modelOutput.scalars, sample.scalars).map { m, s in
-            (s - m * sigma_t) / alpha_t
+
+        return MLShapedArray(unsafeUninitializedShape: modelOutput.shape) { scalars, _ in
+            assert(scalars.count == scalarCount)
+            modelOutput.withUnsafeShapedBufferPointer { modelOutput, _, _ in
+                sample.withUnsafeShapedBufferPointer { sample, _, _ in
+                    for i in 0 ..< scalarCount {
+                        scalars.initializeElement(at: i, to: (sample[i] - modelOutput[i] * sigma_t) / alpha_t)
+                    }
+                }
+            }
         }
-        return MLShapedArray(scalars: x0_scalars, shape: modelOutput.shape)
     }
 
     /// One step for the first-order DPM-Solver (equivalent to DDIM).

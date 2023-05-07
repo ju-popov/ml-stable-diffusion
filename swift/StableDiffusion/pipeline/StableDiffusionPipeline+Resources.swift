@@ -14,9 +14,14 @@ public extension StableDiffusionPipeline {
         public let unetChunk1URL: URL
         public let unetChunk2URL: URL
         public let decoderURL: URL
+        public let encoderURL: URL
         public let safetyCheckerURL: URL
         public let vocabURL: URL
         public let mergesURL: URL
+        public let controlNetDirURL: URL
+        public let controlledUnetURL: URL
+        public let controlledUnetChunk1URL: URL
+        public let controlledUnetChunk2URL: URL
 
         public init(resourcesAt baseURL: URL) {
             textEncoderURL = baseURL.appending(path: "TextEncoder.mlmodelc")
@@ -24,9 +29,14 @@ public extension StableDiffusionPipeline {
             unetChunk1URL = baseURL.appending(path: "UnetChunk1.mlmodelc")
             unetChunk2URL = baseURL.appending(path: "UnetChunk2.mlmodelc")
             decoderURL = baseURL.appending(path: "VAEDecoder.mlmodelc")
+            encoderURL = baseURL.appending(path: "VAEEncoder.mlmodelc")
             safetyCheckerURL = baseURL.appending(path: "SafetyChecker.mlmodelc")
             vocabURL = baseURL.appending(path: "vocab.json")
             mergesURL = baseURL.appending(path: "merges.txt")
+            controlNetDirURL = baseURL.appending(path: "controlnet")
+            controlledUnetURL = baseURL.appending(path: "ControlledUnet.mlmodelc")
+            controlledUnetChunk1URL = baseURL.appending(path: "ControlledUnetChunk1.mlmodelc")
+            controlledUnetChunk2URL = baseURL.appending(path: "ControlledUnetChunk2.mlmodelc")
         }
     }
 
@@ -36,12 +46,14 @@ public extension StableDiffusionPipeline {
     /// - Parameters:
     ///    - baseURL: URL pointing to directory holding all model
     ///               and tokenization resources
+    ///   - controlNetModelNames: Specify ControlNet models to use in generation
     ///   - configuration: The configuration to load model resources with
     ///   - disableSafety: Load time disable of safety to save memory
     ///   - reduceMemory: Setup pipeline in reduced memory mode
     /// - Returns:
     ///  Pipeline ready for image generation if all  necessary resources loaded
     init(resourcesAt baseURL: URL,
+         controlNet controlNetModelNames: [String],
          configuration config: MLModelConfiguration = .init(),
          disableSafety: Bool = false,
          reduceMemory: Bool = false) throws {
@@ -54,15 +66,38 @@ public extension StableDiffusionPipeline {
         let textEncoder = TextEncoder(tokenizer: tokenizer,
                                       modelAt: urls.textEncoderURL,
                                       configuration: config)
+        
+        // ControlNet model
+        var controlNet: ControlNet? = nil
+        let controlNetURLs = controlNetModelNames.map { model in
+            let fileName = model + ".mlmodelc"
+            return urls.controlNetDirURL.appending(path: fileName)
+        }
+        if !controlNetURLs.isEmpty {
+            controlNet = ControlNet(modelAt: controlNetURLs, configuration: config)
+        }
 
         // Unet model
         let unet: Unet
-        if FileManager.default.fileExists(atPath: urls.unetChunk1URL.path) &&
-            FileManager.default.fileExists(atPath: urls.unetChunk2URL.path) {
-            unet = Unet(chunksAt: [urls.unetChunk1URL, urls.unetChunk2URL],
+        let unetURL: URL, unetChunk1URL: URL, unetChunk2URL: URL
+        
+        // if ControlNet available, Unet supports additional inputs from ControlNet
+        if controlNet == nil {
+            unetURL = urls.unetURL
+            unetChunk1URL = urls.unetChunk1URL
+            unetChunk2URL = urls.unetChunk2URL
+        } else {
+            unetURL = urls.controlledUnetURL
+            unetChunk1URL = urls.controlledUnetChunk1URL
+            unetChunk2URL = urls.controlledUnetChunk2URL
+        }
+        
+        if FileManager.default.fileExists(atPath: unetChunk1URL.path) &&
+            FileManager.default.fileExists(atPath: unetChunk2URL.path) {
+            unet = Unet(chunksAt: [unetChunk1URL, unetChunk2URL],
                         configuration: config)
         } else {
-            unet = Unet(modelAt: urls.unetURL, configuration: config)
+            unet = Unet(modelAt: unetURL, configuration: config)
         }
 
         // Image Decoder
@@ -74,11 +109,21 @@ public extension StableDiffusionPipeline {
             FileManager.default.fileExists(atPath: urls.safetyCheckerURL.path) {
             safetyChecker = SafetyChecker(modelAt: urls.safetyCheckerURL, configuration: config)
         }
+        
+        // Optional Image Encoder
+        let encoder: Encoder?
+        if FileManager.default.fileExists(atPath: urls.encoderURL.path) {
+            encoder = Encoder(modelAt: urls.encoderURL, configuration: config)
+        } else {
+            encoder = nil
+        }
 
         // Construct pipeline
         self.init(textEncoder: textEncoder,
                   unet: unet,
                   decoder: decoder,
+                  encoder: encoder,
+                  controlNet: controlNet,
                   safetyChecker: safetyChecker,
                   reduceMemory: reduceMemory)
     }

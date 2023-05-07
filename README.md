@@ -29,9 +29,76 @@ Please see [Important Notes on Performance Benchmarks](#important-notes-on-perfo
 
 The following is recommended to use all the functionality in this repository:
 
-Python | macOS | Xcode | iPadOS, iOS |
-:------:|:------:|:------:|:------:|
-3.8 | 13.1 | 14.2 | 16.2 |
+ Python | macOS | Xcode | iPadOS, iOS |
+:------:|:-----:|:-----:|:-----------:|
+ 3.8    | 13.1  | 14.3  | 16.2        |
+
+## <a name="using-converted-weights"></a> Using Ready-made Core ML Models from Hugging Face Hub
+
+<details>
+  <summary> Click to expand </summary>
+
+🤗 Hugging Face ran the [conversion procedure](#converting-models-to-coreml) on the following models and made the Core ML weights publicly available on the Hub. If you would like to convert a version of Stable Diffusion that is not already available on the Hub, please refer to the [Converting Models to Core ML](#converting-models-to-core-ml).
+
+* [`CompVis/stable-diffusion-v1-4`](https://huggingface.co/apple/coreml-stable-diffusion-v1-4)
+* [`runwayml/stable-diffusion-v1-5`](https://huggingface.co/apple/coreml-stable-diffusion-v1-5)
+* [`stabilityai/stable-diffusion-2-base`](https://huggingface.co/apple/coreml-stable-diffusion-2-base)
+
+If you want to use any of those models you may download the weights and proceed to [generate images with Python](#image-generation-with-python) or [Swift](#image-generation-with-swift).
+
+There are several variants in each model repository. You may clone the whole repos using `git` and `git lfs` to download all variants, or selectively download the ones you need.
+
+To clone the repos using `git`, please follow this process:
+
+**Step 1:** Install the `git lfs` extension for your system.
+
+`git lfs` stores large files outside the main git repo, and it downloads them from the appropriate server after you clone or checkout. It is available in most package managers, check [the installation page](https://git-lfs.com) for details.
+
+**Step 2:** Enable `git lfs` by running this command once:
+
+```bash
+git lfs install
+```
+
+**Step 3:** Use `git clone` to download a copy of the repo that includes all model variants. For Stable Diffusion version 1.4, you'd issue the following command in your terminal:
+
+```bash
+git clone https://huggingface.co/apple/coreml-stable-diffusion-v1-4
+```
+
+If you prefer to download specific variants instead of cloning the repos, you can use the `huggingface_hub` Python library. For example, to do generation in Python using the `ORIGINAL` attention implementation (read [this section](#converting-models-to-core-ml) for details), you could use the following helper code:
+
+```Python
+from huggingface_hub import snapshot_download
+from huggingface_hub.file_download import repo_folder_name
+from pathlib import Path
+import shutil
+
+repo_id = "apple/coreml-stable-diffusion-v1-4"
+variant = "original/packages"
+
+def download_model(repo_id, variant, output_dir):
+    destination = Path(output_dir) / (repo_id.split("/")[-1] + "_" + variant.replace("/", "_"))
+    if destination.exists():
+        raise Exception(f"Model already exists at {destination}")
+    
+    # Download and copy without symlinks
+    downloaded = snapshot_download(repo_id, allow_patterns=f"{variant}/*", cache_dir=output_dir)
+    downloaded_bundle = Path(downloaded) / variant
+    shutil.copytree(downloaded_bundle, destination)
+
+    # Remove all downloaded files
+    cache_folder = Path(output_dir) / repo_folder_name(repo_id=repo_id, repo_type="model")
+    shutil.rmtree(cache_folder)
+    return destination
+
+model_path = download_model(repo_id, variant, output_dir="./models")
+print(f"Model downloaded at {model_path}")
+```
+
+`model_path` would be the path in your local filesystem where the checkpoint was saved. Please, refer to [this post](https://huggingface.co/blog/diffusers-coreml) for additional details.
+
+</details>
 
 ## <a name="converting-models-to-coreml"></a> Converting Models to Core ML
 
@@ -72,6 +139,10 @@ This generally takes 15-20 minutes on an M1 MacBook Pro. Upon successful executi
 
 - `--check-output-correctness`: Compares original PyTorch model's outputs to final Core ML model's outputs. This flag increases RAM consumption significantly so it is recommended only for debugging purposes.
 
+- `--convert-controlnet`: Converts ControlNet models specified after this option. This can also convert multiple models if you specify like `--convert-controlnet lllyasviel/sd-controlnet-mlsd lllyasviel/sd-controlnet-depth`.
+
+- `--unet-support-controlnet`: enables a converted UNet model to receive additional inputs from ControlNet. This is required for generating image with using ControlNet and saved with a different name, `*_control-unet.mlpackage`, distinct from normal UNet. On the other hand, this UNet model can not work without ControlNet. Please use normal UNet for just txt2img.
+
 </details>
 
 ## <a name="image-generation-with-python"></a> Image Generation with Python
@@ -90,6 +161,8 @@ Please refer to the help menu for all available arguments: `python -m python_cor
 - `--model-version`: If you overrode the default model version while converting models to Core ML, you will need to specify the same model version here.
 - `--compute-unit`: Note that the most performant compute unit for this particular implementation may differ across different hardware. `CPU_AND_GPU` or `CPU_AND_NE` may be faster than `ALL`. Please refer to the [Performance Benchmark](#performance-benchmark) section for further guidance.
 - `--scheduler`: If you would like to experiment with different schedulers, you may specify it here. For available options, please see the help menu. You may also specify a custom number of inference steps by `--num-inference-steps` which defaults to 50.
+- `--controlnet`: ControlNet models specified with this option are used in image generation. Use this option in the format `--controlnet lllyasviel/sd-controlnet-mlsd lllyasviel/sd-controlnet-depth` and make sure to use `--controlnet-inputs` in conjunction.
+- `--controlnet-inputs`: Image inputs corresponding to each ControlNet model. Please provide image paths in same order as models in `--controlnet`, for example: `--controlnet-inputs image_mlsd image_depth`.
 
 </details>
 
@@ -100,19 +173,19 @@ Please refer to the help menu for all available arguments: `python -m python_cor
 
 ### <a name="swift-requirements"></a> System Requirements
 
-**Building** (recommended):
+**Building** (minimum):
 
-- Xcode 14.2
-- Command Line Tools for Xcode 14.2
+- Xcode 14.3
+- Command Line Tools for Xcode 14.3
 
 Check [developer.apple.com](https://developer.apple.com/download/all/?q=xcode) for the latest versions.
 
 **Running** (minimum):
 
-| Mac | iPad\* | iPhone\* |
-|:------:|:------:|:------:|
-| macOS 13.1 | iPadOS 16.2 | iOS 16.2 |
-| M1 |  M1  | iPhone 12 Pro |
+| Mac        | iPad\*      | iPhone\*      |
+|:----------:|:-----------:|:-------------:|
+| macOS 13.1 | iPadOS 16.2 | iOS 16.2      |
+| M1         | M1          | iPhone 12 Pro |
 
 You will also need the resources generated by the `--bundle-resources-for-swift-cli` option described in [Converting Models to Core ML](#converting-models-to-coreml)
 
@@ -153,11 +226,34 @@ Both of these products require the Core ML models and tokenization resources to 
 - `vocab.json` (tokenizer vocabulary file)
 - `merges.text` (merges for byte pair encoding file)
 
+Optionally, for image2image, in-painting, or similar:
+
+- `VAEEncoder.mlmodelc` (image encoder model) 
+
 Optionally, it may also include the safety checker model that some versions of Stable Diffusion include:
 
 - `SafetyChecker.mlmodelc`
 
+Optionally, for ControlNet:
+
+- `ControlledUNet.mlmodelc` or `ControlledUnetChunk1.mlmodelc` & `ControlledUnetChunk2.mlmodelc` (enabled to receive ControlNet values)
+- `controlnet/` (directory containing ControlNet models)
+  - `LllyasvielSdControlnetMlsd.mlmodelc` (for example, from lllyasviel/sd-controlnet-mlsd)
+  - `LllyasvielSdControlnetDepth.mlmodelc` (for example, from lllyasviel/sd-controlnet-depth)
+  - Other models you converted
+
 Note that the chunked version of Unet is checked for first. Only if it is not present will the full `Unet.mlmodelc` be loaded. Chunking is required for iOS and iPadOS and not necessary for macOS.
+
+</details>
+
+## <a name="swift-app"></a> Example Swift App
+
+<details>
+  <summary> Click to expand </summary>
+
+🤗 Hugging Face created an [open-source demo app](https://github.com/huggingface/swift-coreml-diffusers) on top of this library. It's written in native Swift and Swift UI, and runs on macOS, iOS and iPadOS. You can use the code as a starting point for your app, or to see how to integrate this library in your own projects.
+
+Hugging Face has made the app [available in the Mac App Store](https://apps.apple.com/app/diffusers/id1666309574?mt=12).
 
 </details>
 
@@ -220,6 +316,20 @@ Differences may be less or more pronounced for different inputs. Please see the 
 
 </details>
 
+## <a name="results-with-controlnet"></a> Results with ControlNet
+
+<details>
+  <summary> Click to expand </summary>
+
+[ControlNet](https://huggingface.co/lllyasviel/ControlNet) allows users to condition image generation with Stable Diffusion on signals such as edge maps, depth maps, segmentation maps, scribbles and pose. Thanks to [@ryu38's contribution](https://github.com/apple/ml-stable-diffusion/pull/153), both the Python CLI and the Swift package support ControlNet models. Please refer to CLI arguments in previous sections to exercise this new feature.
+
+Example results using the prompt "a high quality photo of a surfing dog" conditioned on the scribble (leftmost):
+
+<img src="assets/controlnet_readme_reel.png">
+
+</details>
+
+
 ##  <a name="faq"></a> FAQ
 
 <details>
@@ -245,6 +355,7 @@ Differences may be less or more pronounced for different inputs. Please see the 
 <b> A3: </b>  In order to minimize the memory impact of the model conversion process, please execute the following command instead:
 
 ```bash
+python -m python_coreml_stable_diffusion.torch2coreml --convert-vae-encoder -o <output-mlpackages-directory> && \
 python -m python_coreml_stable_diffusion.torch2coreml --convert-vae-decoder -o <output-mlpackages-directory> && \
 python -m python_coreml_stable_diffusion.torch2coreml --convert-unet -o <output-mlpackages-directory> && \
 python -m python_coreml_stable_diffusion.torch2coreml --convert-text-encoder -o <output-mlpackages-directory> && \
@@ -301,7 +412,7 @@ On iOS, depending on the iPhone model, Stable Diffusion model versions, selected
 
   <b> 1. Random Number Generator Behavior </b>
 
-  The main source of potentially different results across PyTorch and Core ML is the Random Number Generator ([RNG](https://en.wikipedia.org/wiki/Random_number_generation)) behavior. PyTorch and Numpy have different sources of randomness. `python_coreml_stable_diffusion` generally relies on Numpy for RNG (e.g. latents initialization) and `StableDiffusion` Swift Library reproduces this RNG behavior. However, PyTorch-based pipelines such as Hugging Face `diffusers` relies on PyTorch's RNG behavior.
+  The main source of potentially different results across PyTorch and Core ML is the Random Number Generator ([RNG](https://en.wikipedia.org/wiki/Random_number_generation)) behavior. PyTorch and Numpy have different sources of randomness. `python_coreml_stable_diffusion` generally relies on Numpy for RNG (e.g. latents initialization) and `StableDiffusion` Swift Library reproduces this RNG behavior by default. However, PyTorch-based pipelines such as Hugging Face `diffusers` relies on PyTorch's RNG behavior. Thanks to @liuliu's [contribution](https://github.com/apple/ml-stable-diffusion/pull/124), one can match the PyTorch (CPU) RNG behavior in Swift by specifying `--rng torch` which selects the `torchRNG` mode.
 
   <b> 2. PyTorch </b>
 
